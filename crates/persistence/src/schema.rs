@@ -360,6 +360,7 @@ diesel::table! {
         window_id -> Integer,
         custom_title -> Nullable<Text>,
         color -> Nullable<Text>,
+        group_id -> Nullable<Integer>,
     }
 }
 
@@ -447,6 +448,7 @@ diesel::table! {
         agent_management_filters -> Nullable<Text>,
         left_panel_open -> Nullable<Bool>,
         vertical_tabs_panel_open -> Nullable<Bool>,
+        tab_groups -> Nullable<Text>,
     }
 }
 

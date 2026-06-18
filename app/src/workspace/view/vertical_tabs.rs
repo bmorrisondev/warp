@@ -54,7 +54,7 @@ use crate::pane_group::{
     CodePane, NotebookPane, PaneGroup, PaneId, TabBarHoverIndex, TerminalPane, WorkflowPane,
 };
 use crate::safe_triangle::SafeTriangle;
-use crate::tab::{tab_position_id, SelectedTabColor, TabData};
+use crate::tab::{tab_position_id, SelectedTabColor, TabData, TabGroupId, TabGroupInfo};
 use crate::terminal::cli_agent_sessions::listener::agent_supports_rich_status;
 use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
 use crate::terminal::session_settings::SessionSettings;
@@ -78,8 +78,8 @@ use crate::workspace::view::vertical_tabs::telemetry::{
     VerticalTabsChipEntrypoint, VerticalTabsTelemetryEvent,
 };
 use crate::workspace::{
-    PaneViewLocator, TabBarLocation, TabContextMenuAnchor, VerticalTabsPaneContextMenuTarget,
-    VerticalTabsPaneDropTargetData, Workspace,
+    PaneViewLocator, TabBarLocation, TabContextMenuAnchor, VerticalTabsGroupDropTargetData,
+    VerticalTabsPaneContextMenuTarget, VerticalTabsPaneDropTargetData, Workspace,
 };
 use crate::{send_telemetry_from_app_ctx, FeatureFlag};
 
@@ -565,6 +565,7 @@ pub(super) struct VerticalTabsPanelState {
     detail_overlay_state: Arc<Mutex<VerticalTabsDetailOverlayState>>,
     new_tab_hover_state: MouseStateHandle,
     new_tab_button_state: MouseStateHandle,
+    new_group_button_state: MouseStateHandle,
     pub(super) search_query: String,
     settings_button_mouse_state: MouseStateHandle,
     panes_segment_mouse_state: MouseStateHandle,
@@ -582,6 +583,8 @@ pub(super) struct VerticalTabsPanelState {
     show_pr_link_info_tooltip_mouse_state: MouseStateHandle,
     show_diff_stats_mouse_state: MouseStateHandle,
     show_details_on_hover_mouse_state: MouseStateHandle,
+    tab_group_header_mouse_states: RefCell<HashMap<TabGroupId, MouseStateHandle>>,
+    new_group_hover_state: MouseStateHandle,
     pub(super) show_settings_popup: bool,
 }
 
@@ -600,6 +603,7 @@ impl Default for VerticalTabsPanelState {
             detail_overlay_state: Arc::new(Mutex::new(VerticalTabsDetailOverlayState::default())),
             new_tab_hover_state: Default::default(),
             new_tab_button_state: Default::default(),
+            new_group_button_state: Default::default(),
             search_query: String::new(),
             settings_button_mouse_state: Default::default(),
             panes_segment_mouse_state: Default::default(),
@@ -617,6 +621,8 @@ impl Default for VerticalTabsPanelState {
             show_pr_link_info_tooltip_mouse_state: Default::default(),
             show_diff_stats_mouse_state: Default::default(),
             show_details_on_hover_mouse_state: Default::default(),
+            tab_group_header_mouse_states: RefCell::default(),
+            new_group_hover_state: Default::default(),
             show_settings_popup: false,
         }
     }
@@ -1015,6 +1021,13 @@ impl VerticalTabsPanelState {
         });
     }
 
+    pub(super) fn scroll_to_group(&self, group_id: TabGroupId) {
+        self.scroll_state.scroll_to_position(ScrollTarget {
+            position_id: tab_group_header_position_id(group_id),
+            mode: ScrollToPositionMode::FullyIntoView,
+        });
+    }
+
     /// Returns the indices (in original order) of tab groups that have at least
     /// one pane matching the current search query. Returns all indices when the
     /// query is empty.
@@ -1104,6 +1117,10 @@ const SEARCH_BAR_HEIGHT: f32 = 24.;
 const CONTROL_BAR_BUTTON_RADIUS: Radius = Radius::Pixels(4.);
 const SPLIT_BUTTON_HEIGHT: f32 = SEARCH_BAR_HEIGHT;
 pub(super) const VERTICAL_TABS_ADD_TAB_POSITION_ID: &str = "vertical_tabs_add_tab_button";
+
+pub(super) fn tab_group_header_position_id(group_id: TabGroupId) -> String {
+    format!("tab_group_header_{}", group_id.0)
+}
 pub(super) const VERTICAL_TABS_SETTINGS_BUTTON_POSITION_ID: &str = "vertical_tabs_settings_button";
 
 pub(super) fn vtab_action_buttons_position_id(tab_index: usize) -> String {
@@ -1258,6 +1275,7 @@ fn render_control_bar(
         .finish();
 
     let settings_button = render_settings_button(state, appearance);
+    let new_group_button = render_new_group_button(state, appearance);
     let new_tab_button = render_new_tab_button(state, workspace, appearance, app);
 
     Container::new(
@@ -1267,6 +1285,7 @@ fn render_control_bar(
             .with_spacing(CONTROL_BAR_SPACING)
             .with_child(Shrinkable::new(1., search_bar).finish())
             .with_child(settings_button)
+            .with_child(new_group_button)
             .with_child(new_tab_button)
             .finish(),
     )
@@ -1394,6 +1413,56 @@ fn render_settings_button(
     .finish();
 
     SavePosition::new(button, VERTICAL_TABS_SETTINGS_BUTTON_POSITION_ID).finish()
+}
+
+fn render_new_group_button(
+    state: &VerticalTabsPanelState,
+    appearance: &Appearance,
+) -> Box<dyn Element> {
+    let theme = appearance.theme();
+    let sub_text = theme.sub_text_color(theme.background());
+
+    Hoverable::new(state.new_group_hover_state.clone(), move |hover_state| {
+        let button = combo_inner_button(
+            appearance,
+            UiIcon::Folder,
+            false,
+            state.new_group_button_state.clone(),
+        )
+        .with_style(
+            UiComponentStyles::default()
+                .set_border_radius(CornerRadius::with_all(CONTROL_BAR_BUTTON_RADIUS))
+                .set_font_color(sub_text.into()),
+        )
+        .build()
+        .on_click(|ctx, _, _| {
+            ctx.dispatch_typed_action(WorkspaceAction::CreateTabGroup { name: None });
+        })
+        .finish();
+
+        if hover_state.is_hovered() {
+            let tooltip = appearance
+                .ui_builder()
+                .tool_tip("New group".to_string())
+                .build()
+                .finish();
+            let mut stack = Stack::new().with_child(button);
+            stack.add_positioned_overlay_child(
+                tooltip,
+                OffsetPositioning::offset_from_parent(
+                    vec2f(0., 4.),
+                    ParentOffsetBounds::WindowByPosition,
+                    ParentAnchor::BottomMiddle,
+                    ChildAnchor::TopMiddle,
+                ),
+            );
+            stack.finish()
+        } else {
+            button
+        }
+    })
+    .with_cursor(Cursor::PointingHand)
+    .finish()
 }
 
 fn render_new_tab_button(
@@ -1538,6 +1607,110 @@ fn render_vertical_tabs_panel(
             (MIN_PANEL_WIDTH, max_width.max(MIN_PANEL_WIDTH))
         }))
         .finish()
+}
+
+fn tab_group_header_mouse_state(
+    state: &VerticalTabsPanelState,
+    group_id: TabGroupId,
+) -> MouseStateHandle {
+    state
+        .tab_group_header_mouse_states
+        .borrow_mut()
+        .entry(group_id)
+        .or_default()
+        .clone()
+}
+
+fn render_configurable_tab_group_header(
+    state: &VerticalTabsPanelState,
+    workspace: &Workspace,
+    group: &TabGroupInfo,
+    group_index: usize,
+    is_drag_target: bool,
+    app: &AppContext,
+) -> Box<dyn Element> {
+    let appearance = Appearance::as_ref(app);
+    let theme = appearance.theme();
+    let sub_text = theme.sub_text_color(theme.background());
+    let main_text = theme.main_text_color(theme.background());
+    let group_id = group.id;
+    let is_being_renamed = workspace.group_being_renamed == Some(group_id);
+    let display_name = group.display_name(group_index);
+    let rename_editor = workspace.tab_rename_editor.clone();
+    let mouse_state = tab_group_header_mouse_state(state, group_id);
+
+    let chevron_icon = if group.collapsed {
+        UiIcon::ChevronRight
+    } else {
+        UiIcon::ChevronDown
+    };
+    let chevron = ConstrainedBox::new(chevron_icon.to_warpui_icon(sub_text).finish())
+        .with_width(12.)
+        .with_height(12.)
+        .finish();
+
+    let title_element: Box<dyn Element> = if is_being_renamed {
+        TextInput::new(
+            rename_editor,
+            UiComponentStyles::default()
+                .set_background(ElementFill::None)
+                .set_border_width(0.),
+        )
+        .build()
+        .finish()
+    } else {
+        Text::new_inline(display_name, appearance.ui_font_family(), 10.)
+            .with_color(main_text.into())
+            .with_clip(ClipConfig::ellipsis())
+            .finish()
+    };
+
+    let header_row = Flex::row()
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(4.)
+        .with_child(chevron)
+        .with_child(Expanded::new(1., title_element).finish())
+        .finish();
+
+    let mut header = Container::new(header_row).with_padding(
+        Padding::uniform(GROUP_HEADER_VERTICAL_PADDING)
+            .with_left(GROUP_HORIZONTAL_PADDING)
+            .with_right(GROUP_HORIZONTAL_PADDING),
+    );
+    if is_drag_target {
+        header = header.with_background(internal_colors::fg_overlay_3(theme));
+    } else {
+        header = header.with_background(internal_colors::neutral_1(theme));
+    }
+    let header = header
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(ROW_CORNER_RADIUS)))
+        .finish();
+
+    let header = Hoverable::new(mouse_state, move |_hover_state| header)
+        .on_click(move |ctx, _, _| {
+            ctx.dispatch_typed_action(WorkspaceAction::ToggleTabGroupCollapsed { group_id });
+        })
+        .on_double_click(move |ctx, _, _| {
+            ctx.dispatch_typed_action(WorkspaceAction::RenameTabGroup { group_id });
+        })
+        .on_right_click(move |ctx, _, position| {
+            ctx.dispatch_typed_action(WorkspaceAction::ToggleTabGroupContextMenu {
+                group_id,
+                position,
+            });
+        })
+        .with_cursor(Cursor::PointingHand)
+        .finish();
+
+    SavePosition::new(
+        DropTarget::new(
+            header,
+            VerticalTabsGroupDropTargetData { group_id },
+        )
+        .finish(),
+        &tab_group_header_position_id(group_id),
+    )
+    .finish()
 }
 
 fn render_groups(
@@ -1701,27 +1874,52 @@ fn render_groups(
         groups = groups.with_spacing(TABS_MODE_ITEM_SPACING);
     }
 
-    for (visible_tab_index, (tab_index, filtered_pane_ids)) in visible_tabs.iter().enumerate() {
-        // Insert ghost slot before this tab group if the drop would land here.
-        if ghost_insertion_index == Some(*tab_index) {
-            groups.add_child(render_ghost_vertical_tab_slot(workspace, app));
+    for (group_index, group) in workspace.tab_groups.iter().enumerate() {
+        let group_tabs: Vec<_> = visible_tabs
+            .iter()
+            .filter(|(tab_index, _)| workspace.tabs[*tab_index].group_id == group.id)
+            .collect();
+
+        if group_tabs.is_empty() && !query.is_empty() {
+            continue;
         }
-        let insert_before_index = *tab_index;
-        let insert_after_index =
-            (visible_tab_index == visible_tabs.len() - 1).then_some(tab_index + 1);
-        groups.add_child(render_tab_group(
+
+        let is_group_drag_target = workspace.hovered_tab_group == Some(group.id);
+        groups.add_child(render_configurable_tab_group_header(
             state,
             workspace,
-            *tab_index,
-            &workspace.tabs[*tab_index],
-            filtered_pane_ids.as_deref(),
-            TabGroupDragState {
-                is_any_pane_dragging,
-                insert_before_index,
-                insert_after_index,
-            },
+            group,
+            group_index,
+            is_group_drag_target,
             app,
         ));
+
+        let show_group_tabs = !group.collapsed || !query.is_empty();
+        if show_group_tabs {
+            for (visible_tab_index_in_group, (tab_index, filtered_pane_ids)) in
+                group_tabs.iter().enumerate()
+            {
+                if ghost_insertion_index == Some(*tab_index) {
+                    groups.add_child(render_ghost_vertical_tab_slot(workspace, app));
+                }
+                let insert_before_index = *tab_index;
+                let insert_after_index = (visible_tab_index_in_group == group_tabs.len() - 1)
+                    .then_some(tab_index + 1);
+                groups.add_child(render_tab_group(
+                    state,
+                    workspace,
+                    *tab_index,
+                    &workspace.tabs[*tab_index],
+                    filtered_pane_ids.as_deref(),
+                    TabGroupDragState {
+                        is_any_pane_dragging,
+                        insert_before_index,
+                        insert_after_index,
+                    },
+                    app,
+                ));
+            }
+        }
     }
     // Ghost after all tab groups (fencepost).
     if ghost_insertion_index == Some(workspace.tabs.len()) {
@@ -2130,13 +2328,30 @@ fn render_tab_group_internal(
         .on_drag_start(|ctx, _, _| {
             ctx.dispatch_typed_action(WorkspaceAction::StartTabDrag);
         })
-        .on_drag(move |ctx, _, rect, _| {
+        .on_drag(move |ctx, _, rect, drop_data| {
+            if let Some(data) = drop_data
+                .and_then(|data| data.as_any().downcast_ref::<VerticalTabsGroupDropTargetData>())
+            {
+                ctx.dispatch_typed_action(WorkspaceAction::HoverTabGroupHeader {
+                    group_id: data.group_id,
+                });
+            } else {
+                ctx.dispatch_typed_action(WorkspaceAction::ClearHoveredTabGroup);
+            }
             ctx.dispatch_typed_action(WorkspaceAction::DragTab {
                 tab_index,
                 tab_position: rect,
             });
         })
-        .on_drop(|ctx, _, _, _| {
+        .on_drop(move |ctx, _, _, drop_data| {
+            if let Some(data) = drop_data
+                .and_then(|data| data.as_any().downcast_ref::<VerticalTabsGroupDropTargetData>())
+            {
+                ctx.dispatch_typed_action(WorkspaceAction::DropTabOnGroupHeader {
+                    tab_index,
+                    group_id: data.group_id,
+                });
+            }
             ctx.dispatch_typed_action(WorkspaceAction::DropTab);
         });
     // Only lock the drag to the vertical axis when cross-window tab drag is

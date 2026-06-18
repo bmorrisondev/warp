@@ -53,7 +53,7 @@ use crate::pane_group::TabBarHoverIndex;
 use crate::server::telemetry::{AgentModeEntrypoint, PaletteSource};
 use crate::settings::AISettings;
 use crate::settings_view::{self, flags, SettingsSection};
-use crate::tab::uses_vertical_tabs;
+use crate::tab::{uses_vertical_tabs, TabGroupId};
 use crate::util::bindings::{self, cmd_or_ctrl_shift, is_binding_pty_compliant, CustomAction};
 use crate::{code, modal, notebooks, tab_configs};
 
@@ -1563,6 +1563,17 @@ pub struct VerticalTabsPaneDropTargetData {
 pub enum TabBarLocation {
     TabIndex(usize),
     AfterTabIndex(usize), // Indicates any area after the tabs in the tab bar, includes the total tab count
+}
+
+#[derive(PartialEq, Copy, Clone, Debug, Serialize, Deserialize)]
+pub struct VerticalTabsGroupDropTargetData {
+    pub group_id: TabGroupId,
+}
+
+impl DropTargetData for VerticalTabsGroupDropTargetData {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 impl DropTargetData for TabBarDropTargetData {

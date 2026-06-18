@@ -17,7 +17,7 @@ use crate::root_view::quake_mode_window_id;
 use crate::server::ids::SyncId;
 use crate::settings_view::environments_page::EnvironmentsPage;
 use crate::settings_view::SettingsSection;
-use crate::tab::SelectedTabColor;
+use crate::tab::{SelectedTabColor, TabGroupId, TabGroupInfo};
 use crate::terminal::ShellLaunchData;
 use crate::themes::theme::AnsiColorIdentifier;
 use crate::workspace::view::left_panel::ToolPanelView;
@@ -40,6 +40,12 @@ pub struct PersistedAgentManagementFilters {
     pub filters: AgentManagementFilters,
 }
 
+#[derive(Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PersistedTabGroupState {
+    pub groups: Vec<TabGroupInfo>,
+    pub next_group_id: usize,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct WindowSnapshot {
     pub tabs: Vec<TabSnapshot>,
@@ -56,6 +62,7 @@ pub struct WindowSnapshot {
     pub left_panel_width: Option<f32>,
     pub right_panel_width: Option<f32>,
     pub agent_management_filters: Option<PersistedAgentManagementFilters>,
+    pub tab_groups: PersistedTabGroupState,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -66,6 +73,7 @@ pub struct TabSnapshot {
     pub selected_color: SelectedTabColor,
     pub left_panel: Option<LeftPanelSnapshot>,
     pub right_panel: Option<RightPanelSnapshot>,
+    pub group_id: TabGroupId,
 }
 
 impl TabSnapshot {

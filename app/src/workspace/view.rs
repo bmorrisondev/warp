@@ -337,7 +337,8 @@ use crate::settings_view::{flags, SettingsSection, SettingsView, SettingsViewEve
 use crate::shell_indicator::ShellIndicatorType;
 use crate::tab::{
     tab_position_id, uses_vertical_tabs, NewSessionMenuItem, PaneNameMenuTarget, SelectedTabColor,
-    TabBarState, TabComponent, TabData, TabTelemetryAction, TAB_BAR_BORDER_HEIGHT,
+    TabBarState, TabComponent, TabData, TabGroupId, TabGroupInfo, TabTelemetryAction,
+    TAB_BAR_BORDER_HEIGHT,
 };
 use crate::tab_configs::action_sidecar::SidecarItemKind;
 use crate::tab_configs::remove_confirmation_dialog::{
@@ -927,6 +928,16 @@ pub struct Workspace {
     /// Tracks tab activation order (most-recently-used first).
     /// Each entry is the `pane_group.id()` of the corresponding tab.
     tab_mru_order: Vec<EntityId>,
+    /// Ordered list of tab groups; rendering order matches this vec.
+    pub(crate) tab_groups: Vec<TabGroupInfo>,
+    /// Monotonically increasing counter for minting new `TabGroupId`s.
+    next_group_id: usize,
+    /// When set, newly created tabs are added to this group instead of the active tab's group.
+    preferred_group_for_new_tabs: Option<TabGroupId>,
+    pub(crate) group_being_renamed: Option<TabGroupId>,
+    pub(crate) hovered_tab_group: Option<TabGroupId>,
+    tab_group_context_menu: ViewHandle<Menu<WorkspaceAction>>,
+    show_tab_group_context_menu: Option<(TabGroupId, Vector2F)>,
     pub(crate) hovered_tab_index: Option<TabBarHoverIndex>,
     tab_bar_hover_state: MouseStateHandle,
     tab_fixed_width: Option<f32>,
@@ -1322,6 +1333,19 @@ impl Workspace {
         event: &EditorEvent,
         ctx: &mut ViewContext<Self>,
     ) {
+        if self.group_being_renamed.is_some() {
+            match event {
+                EditorEvent::Blurred | EditorEvent::Enter => {
+                    self.finish_tab_group_rename(ctx);
+                }
+                EditorEvent::Escape => {
+                    self.cancel_tab_group_rename(ctx);
+                }
+                _ => {}
+            }
+            return;
+        }
+
         if self.current_workspace_state.is_tab_being_renamed() {
             match event {
                 EditorEvent::Blurred | EditorEvent::Enter => {
@@ -3067,10 +3091,18 @@ impl Workspace {
             },
         );
 
+        let default_group = TabGroupInfo::new(TabGroupId(0));
         let mut ws = Self {
             tabs: Vec::new(),
             active_tab_index: 0,
             tab_mru_order: Vec::new(),
+            tab_groups: vec![default_group],
+            next_group_id: 1,
+            preferred_group_for_new_tabs: None,
+            group_being_renamed: None,
+            hovered_tab_group: None,
+            tab_group_context_menu: Self::build_tab_group_context_menu(ctx),
+            show_tab_group_context_menu: None,
             hovered_tab_index: None,
             tab_bar_hover_state: Default::default(),
             traffic_light_mouse_states: Default::default(),
@@ -3592,6 +3624,7 @@ impl Workspace {
             } => {
                 let active_tab_index = window_snapshot.active_tab_index;
                 let restored_left_panel_open = window_snapshot.left_panel_open;
+                self.restore_tab_groups_from_snapshot(&window_snapshot.tab_groups);
 
                 window_snapshot
                     .tabs
@@ -3608,6 +3641,7 @@ impl Workspace {
                         self.tabs[tab_index].default_directory_color =
                             saved_tab.default_directory_color;
                         self.tabs[tab_index].selected_color = saved_tab.selected_color;
+                        self.tabs[tab_index].group_id = saved_tab.group_id;
 
                         let pane_group = self.tabs[tab_index].pane_group.clone();
 
@@ -3623,6 +3657,8 @@ impl Workspace {
                             );
                         }
                     });
+
+                self.ensure_default_tab_group();
 
                 if self.tab_count() == 0 {
                     if self.should_trigger_get_started_onboarding(ctx) {
@@ -3977,7 +4013,7 @@ impl Workspace {
             me.handle_file_tree_event(pane_group, event, ctx)
         });
 
-        self.tabs.push(TabData::new(new_pane_group));
+        self.tabs.push(TabData::new(new_pane_group, self.active_group_id()));
         self.activate_tab_internal(self.tab_count() - 1, ctx);
     }
 
@@ -4051,7 +4087,7 @@ impl Workspace {
             me.handle_file_tree_event(pane_group, event, ctx)
         });
 
-        self.tabs.push(TabData::new(new_pane_group.clone()));
+        self.tabs.push(TabData::new(new_pane_group.clone(), self.active_group_id()));
         let new_tab_index = self.tab_count() - 1;
         self.tab_mru_order
             .push(self.tabs[new_tab_index].pane_group.id());
@@ -4904,6 +4940,273 @@ impl Workspace {
         self.server_time = Some(server_time);
     }
 
+    /// Returns the `TabGroupId` for newly created tabs.
+    pub(crate) fn active_group_id(&self) -> TabGroupId {
+        if let Some(group_id) = self.preferred_group_for_new_tabs {
+            return group_id;
+        }
+        self.tabs
+            .get(self.active_tab_index)
+            .map(|tab| tab.group_id)
+            .unwrap_or_else(|| {
+                self.tab_groups
+                    .first()
+                    .map(|g| g.id)
+                    .unwrap_or(TabGroupId(0))
+            })
+    }
+
+    pub(crate) fn tabs_in_group(&self, group_id: TabGroupId) -> Vec<(usize, &TabData)> {
+        self.tabs
+            .iter()
+            .enumerate()
+            .filter(|(_, tab)| tab.group_id == group_id)
+            .collect()
+    }
+
+    fn mint_tab_group_id(&mut self) -> TabGroupId {
+        let id = TabGroupId(self.next_group_id);
+        self.next_group_id += 1;
+        id
+    }
+
+    pub(crate) fn create_tab_group(
+        &mut self,
+        name: Option<String>,
+        ctx: &mut ViewContext<Self>,
+    ) -> TabGroupId {
+        let group_id = self.mint_tab_group_id();
+        let mut group = TabGroupInfo::new(group_id);
+        if let Some(name) = name {
+            group = group.with_name(name);
+        }
+        self.tab_groups.push(group);
+        self.preferred_group_for_new_tabs = Some(group_id);
+        self.expand_tab_group(group_id, ctx);
+        ctx.notify();
+        group_id
+    }
+
+    pub(crate) fn expand_tab_group(&mut self, group_id: TabGroupId, ctx: &mut ViewContext<Self>) {
+        if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == group_id) {
+            group.collapsed = false;
+            ctx.notify();
+        }
+    }
+
+    fn expand_tab_group_for_active_tab(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Some(tab) = self.tabs.get(self.active_tab_index) {
+            self.expand_tab_group(tab.group_id, ctx);
+        }
+    }
+
+    pub(crate) fn toggle_tab_group_collapsed(
+        &mut self,
+        group_id: TabGroupId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == group_id) {
+            group.collapsed = !group.collapsed;
+            ctx.notify();
+        }
+    }
+
+    pub(crate) fn move_tab_to_flat_index(
+        &mut self,
+        from_index: usize,
+        to_index: usize,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if from_index >= self.tabs.len() || from_index == to_index {
+            return;
+        }
+        let mut tab = self.tabs.remove(from_index);
+        let mut to_index = to_index.min(self.tabs.len());
+        if from_index < to_index {
+            to_index = to_index.saturating_sub(1);
+        }
+        let target_group_id = self
+            .tabs
+            .get(to_index)
+            .or_else(|| self.tabs.get(to_index.saturating_sub(1)))
+            .map(|t| t.group_id)
+            .unwrap_or_else(|| tab.group_id);
+        tab.group_id = target_group_id;
+        self.tabs.insert(to_index, tab);
+
+        if self.active_tab_index == from_index {
+            self.set_active_tab_index(to_index, ctx);
+        } else if from_index < self.active_tab_index && to_index >= self.active_tab_index {
+            self.set_active_tab_index(self.active_tab_index - 1, ctx);
+        } else if from_index > self.active_tab_index && to_index <= self.active_tab_index {
+            self.set_active_tab_index(self.active_tab_index + 1, ctx);
+        } else {
+            ctx.notify();
+        }
+    }
+
+    pub(crate) fn append_tab_to_group(
+        &mut self,
+        tab_index: usize,
+        group_id: TabGroupId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if tab_index >= self.tabs.len() {
+            return;
+        }
+        let mut tab = self.tabs.remove(tab_index);
+        tab.group_id = group_id;
+        let insert_at = self
+            .tabs
+            .iter()
+            .rposition(|t| t.group_id == group_id)
+            .map(|i| i + 1)
+            .unwrap_or_else(|| {
+                self.tab_groups
+                    .iter()
+                    .position(|g| g.id == group_id)
+                    .map(|group_index| {
+                        self.tab_groups
+                            .iter()
+                            .take(group_index)
+                            .filter_map(|g| {
+                                self.tabs.iter().rposition(|t| t.group_id == g.id)
+                            })
+                            .max()
+                            .map(|i| i + 1)
+                            .unwrap_or(0)
+                    })
+                    .unwrap_or(self.tabs.len())
+            });
+        let insert_at = if tab_index < insert_at {
+            insert_at - 1
+        } else {
+            insert_at
+        };
+        self.tabs.insert(insert_at, tab);
+        self.expand_tab_group(group_id, ctx);
+
+        if self.active_tab_index == tab_index {
+            self.set_active_tab_index(insert_at, ctx);
+        } else if tab_index < self.active_tab_index && insert_at >= self.active_tab_index {
+            self.set_active_tab_index(self.active_tab_index - 1, ctx);
+        } else if tab_index > self.active_tab_index && insert_at <= self.active_tab_index {
+            self.set_active_tab_index(self.active_tab_index + 1, ctx);
+        } else {
+            ctx.notify();
+        }
+    }
+
+    fn build_tab_group_context_menu(
+        ctx: &mut ViewContext<Self>,
+    ) -> ViewHandle<Menu<WorkspaceAction>> {
+        let menu = ctx.add_typed_action_view(|_| Menu::new().with_drop_shadow());
+        ctx.subscribe_to_view(&menu, |me, _, event, ctx| {
+            if let MenuEvent::Close { .. } = event {
+                me.show_tab_group_context_menu = None;
+                ctx.notify();
+            }
+        });
+        menu
+    }
+
+    pub(crate) fn toggle_tab_group_context_menu(
+        &mut self,
+        group_id: TabGroupId,
+        position: Vector2F,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let collapsed = self
+            .tab_groups
+            .iter()
+            .find(|g| g.id == group_id)
+            .is_some_and(|g| g.collapsed);
+        let menu_items = crate::tab::tab_group_context_menu_items(group_id, collapsed);
+        self.tab_group_context_menu
+            .update(ctx, |menu, ctx| menu.set_items(menu_items, ctx));
+        self.show_tab_group_context_menu = Some((group_id, position));
+        ctx.focus(&self.tab_group_context_menu);
+        ctx.notify();
+    }
+
+    pub(crate) fn rename_tab_group(&mut self, group_id: TabGroupId, ctx: &mut ViewContext<Self>) {
+        self.finish_tab_rename(ctx);
+        self.finish_tab_group_rename(ctx);
+        let title = self
+            .tab_groups
+            .iter()
+            .enumerate()
+            .find(|(_, g)| g.id == group_id)
+            .map(|(index, g)| g.display_name(index))
+            .unwrap_or_else(|| "Group".to_string());
+        self.group_being_renamed = Some(group_id);
+        self.tab_rename_editor.update(ctx, move |editor, ctx| {
+            editor.clear_buffer(ctx);
+            editor.insert_selected_text(&title, ctx);
+        });
+        ctx.focus(&self.tab_rename_editor);
+        ctx.notify();
+    }
+
+    fn finish_tab_group_rename(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(group_id) = self.group_being_renamed.take() else {
+            return;
+        };
+        let name = self.tab_rename_editor.as_ref(ctx).buffer_text(ctx);
+        let group_index = self
+            .tab_groups
+            .iter()
+            .position(|g| g.id == group_id)
+            .unwrap_or(0);
+        if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == group_id) {
+            let default_name = TabGroupInfo::new(group_id).display_name(group_index);
+            group.name = if name.trim().is_empty() || name == default_name {
+                None
+            } else {
+                Some(name)
+            };
+        }
+        self.clear_tab_name_editor(ctx);
+        ctx.notify();
+    }
+
+    fn cancel_tab_group_rename(&mut self, ctx: &mut ViewContext<Self>) {
+        self.group_being_renamed = None;
+        self.clear_tab_name_editor(ctx);
+        ctx.notify();
+    }
+
+    pub(crate) fn restore_tab_groups_from_snapshot(
+        &mut self,
+        snapshot: &crate::app_state::PersistedTabGroupState,
+    ) {
+        if snapshot.groups.is_empty() {
+            return;
+        }
+        self.tab_groups = snapshot.groups.clone();
+        self.next_group_id = snapshot.next_group_id.max(
+            self.tab_groups
+                .iter()
+                .map(|g| g.id.0)
+                .max()
+                .unwrap_or(0)
+                + 1,
+        );
+    }
+
+    pub(crate) fn ensure_default_tab_group(&mut self) {
+        if self.tab_groups.is_empty() {
+            self.tab_groups.push(TabGroupInfo::new(TabGroupId(0)));
+            self.next_group_id = self.next_group_id.max(1);
+        }
+        let default_group_id = self.tab_groups[0].id;
+        for tab in &mut self.tabs {
+            if !self.tab_groups.iter().any(|g| g.id == tab.group_id) {
+                tab.group_id = default_group_id;
+            }
+        }
+    }
+
     /// Returns the PaneGroup view handle for the currently active tab.
     pub fn active_tab_pane_group(&self) -> &ViewHandle<PaneGroup> {
         self.get_pane_group_view(self.active_tab_index)
@@ -5026,6 +5329,9 @@ impl Workspace {
         };
 
         self.active_tab_index = index;
+
+        self.preferred_group_for_new_tabs = None;
+        self.expand_tab_group_for_active_tab(ctx);
 
         if let Some(tab) = self.tabs.get(index) {
             let pane_group_id = tab.pane_group.id();
@@ -10048,6 +10354,11 @@ impl Workspace {
                         .unwrap_or_default(),
                     left_panel,
                     right_panel,
+                    group_id: self
+                        .tabs
+                        .get(tab_index)
+                        .map(|tab| tab.group_id)
+                        .unwrap_or_default(),
                 }
             })
             .filter(|tab| {
@@ -10131,6 +10442,10 @@ impl Workspace {
             left_panel_width,
             right_panel_width,
             agent_management_filters,
+            tab_groups: crate::app_state::PersistedTabGroupState {
+                groups: self.tab_groups.clone(),
+                next_group_id: self.next_group_id,
+            },
         }
     }
 
@@ -11048,7 +11363,7 @@ impl Workspace {
 
         match new_tab_placement_setting {
             NewTabPlacement::AfterAllTabs => {
-                self.tabs.push(TabData::new(new_pane_group));
+                self.tabs.push(TabData::new(new_pane_group, self.active_group_id()));
                 self.tab_mru_order
                     .push(self.tabs.last().unwrap().pane_group.id());
                 self.activate_tab_internal(self.tab_count() - 1, ctx);
@@ -11056,13 +11371,13 @@ impl Workspace {
             // Add tab after current tab
             _ => {
                 if self.tab_count() == 0 {
-                    self.tabs.push(TabData::new(new_pane_group));
+                    self.tabs.push(TabData::new(new_pane_group, self.active_group_id()));
                     self.tab_mru_order
                         .push(self.tabs.last().unwrap().pane_group.id());
                     self.activate_tab_internal(self.tab_count() - 1, ctx);
                 } else {
                     let insert_idx = self.active_tab_index + 1;
-                    self.tabs.insert(insert_idx, TabData::new(new_pane_group));
+                    self.tabs.insert(insert_idx, TabData::new(new_pane_group, self.active_group_id()));
                     self.tab_mru_order
                         .push(self.tabs[insert_idx].pane_group.id());
                     self.activate_tab_internal(insert_idx, ctx);
@@ -11128,12 +11443,12 @@ impl Workspace {
         });
 
         if self.tab_count() == 0 {
-            self.tabs.push(TabData::new(new_pane_group));
+            self.tabs.push(TabData::new(new_pane_group, self.active_group_id()));
             self.tab_mru_order
                 .push(self.tabs.last().unwrap().pane_group.id());
             self.activate_tab_internal(self.tab_count() - 1, ctx);
         } else {
-            self.tabs.insert(new_idx, TabData::new(new_pane_group));
+            self.tabs.insert(new_idx, TabData::new(new_pane_group, self.active_group_id()));
             self.tab_mru_order.push(self.tabs[new_idx].pane_group.id());
             self.activate_tab_internal(new_idx, ctx);
         }
@@ -11669,7 +11984,7 @@ impl Workspace {
             me.handle_file_tree_event(pane_group, event, ctx)
         });
 
-        self.tabs.push(TabData::new(new_pane_group.clone()));
+        self.tabs.push(TabData::new(new_pane_group.clone(), self.active_group_id()));
         let new_tab_index = self.tab_count() - 1;
         self.activate_tab_internal(new_tab_index, ctx);
 
@@ -12207,22 +12522,13 @@ impl Workspace {
             TabMovement::Right if index < tabs_len - 1 => index + 1,
             _ => return,
         };
-        // Don't need to worry about negative numbers because that case is covered above
-        self.tabs.swap(index, new_index);
+        self.move_tab_to_flat_index(index, new_index, ctx);
 
         if index == self.active_tab_index {
-            self.set_active_tab_index(new_index, ctx);
             send_telemetry_from_ctx!(TelemetryEvent::MoveActiveTab { direction }, ctx);
         } else {
-            // Don't want to change the active tab for the user due to an adjacent
-            // tab being moved left/right.
-            if new_index == self.active_tab_index {
-                self.set_active_tab_index(index, ctx);
-            }
             send_telemetry_from_ctx!(TelemetryEvent::MoveTab { direction }, ctx);
         }
-
-        ctx.notify();
     }
 
     /// How to render the tab bar.
@@ -21053,6 +21359,52 @@ impl TypedActionView for Workspace {
                 target,
                 position,
             } => self.toggle_vertical_tabs_pane_context_menu(*tab_index, *target, *position, ctx),
+            CreateTabGroup { name } => {
+                let group_id = self.create_tab_group(name.clone(), ctx);
+                self.vertical_tabs_panel.scroll_to_group(group_id);
+                self.rename_tab_group(group_id, ctx);
+            }
+            AddTabInGroup { group_id } => {
+                self.preferred_group_for_new_tabs = Some(*group_id);
+                self.expand_tab_group(*group_id, ctx);
+                self.add_new_session_tab_with_default_mode(
+                    NewSessionSource::Window,
+                    None,
+                    None,
+                    None,
+                    false,
+                    ctx,
+                );
+            }
+            ToggleTabGroupCollapsed { group_id } => {
+                self.toggle_tab_group_collapsed(*group_id, ctx);
+            }
+            RenameTabGroup { group_id } => self.rename_tab_group(*group_id, ctx),
+            SetTabGroupName { group_id, name } => {
+                if let Some(group) = self.tab_groups.iter_mut().find(|g| g.id == *group_id) {
+                    group.name = if name.trim().is_empty() {
+                        None
+                    } else {
+                        Some(name.clone())
+                    };
+                    ctx.notify();
+                }
+            }
+            DropTabOnGroupHeader {
+                tab_index,
+                group_id,
+            } => self.append_tab_to_group(*tab_index, *group_id, ctx),
+            ToggleTabGroupContextMenu { group_id, position } => {
+                self.toggle_tab_group_context_menu(*group_id, *position, ctx);
+            }
+            HoverTabGroupHeader { group_id } => {
+                self.hovered_tab_group = Some(*group_id);
+                ctx.notify();
+            }
+            ClearHoveredTabGroup => {
+                self.hovered_tab_group = None;
+                ctx.notify();
+            }
             ToggleTabBarOverflowMenu => self.toggle_tab_bar_overflow_menu(ctx),
             ToggleBlockSnackbar => self.toggle_block_snackbar(ctx),
             ToggleWelcomeTips => self.toggle_welcome_tips_visiblity(ctx),
@@ -21614,8 +21966,9 @@ impl TypedActionView for Workspace {
             ToggleScrollReporting => self.toggle_scroll_reporting(ctx),
             ToggleFocusReporting => self.toggle_focus_reporting(ctx),
             StartTabDrag => {
-                // If we are renaming a tab, finish the rename before dragging.
+                // If we are renaming a tab or group, finish the rename before dragging.
                 self.finish_tab_rename(ctx);
+                self.finish_tab_group_rename(ctx);
                 self.current_workspace_state.is_tab_being_dragged = true;
             }
             OpenWarpDrive => {
@@ -22012,6 +22365,7 @@ impl TypedActionView for Workspace {
                                 .unwrap_or(0)
                         });
                 self.current_workspace_state.is_tab_being_dragged = false;
+                self.hovered_tab_group = None;
                 // Clear the per-tab `detached` flag set by `on_tab_drag` when
                 // the drag first left the tab bar. Skip the tab that has
                 // already been handed off to another window — its source-side
@@ -23640,6 +23994,18 @@ impl View for Workspace {
             }
         }
 
+        if let Some((_, position)) = self.show_tab_group_context_menu {
+            stack.add_positioned_overlay_child(
+                ChildView::new(&self.tab_group_context_menu).finish(),
+                OffsetPositioning::offset_from_parent(
+                    position,
+                    ParentOffsetBounds::WindowByPosition,
+                    ParentAnchor::TopLeft,
+                    ChildAnchor::TopLeft,
+                ),
+            );
+        }
+
         // Render the new session dropdown menu. This is outside the tab bar visibility
         // gate because it can also be opened from the vertical tabs panel.
         if self.show_new_session_dropdown_menu.is_some() {
@@ -24593,7 +24959,7 @@ impl Workspace {
         });
 
         let index = insertion_index.min(self.tabs.len());
-        let mut tab_data = TabData::new(pane_group);
+        let mut tab_data = TabData::new(pane_group, self.active_group_id());
         tab_data.selected_color = color.map_or(SelectedTabColor::Unset, SelectedTabColor::Color);
         tab_data.draggable_state = draggable_state;
         self.tabs.insert(index, tab_data);
@@ -25061,6 +25427,11 @@ impl Workspace {
             return;
         }
 
+        if self.hovered_tab_group.is_some() {
+            ctx.notify();
+            return;
+        }
+
         let new_index = if FeatureFlag::VerticalTabs.is_enabled()
             && *TabSettings::as_ref(ctx).use_vertical_tabs
         {
@@ -25070,15 +25441,7 @@ impl Workspace {
         };
 
         if new_index != current_index {
-            self.tabs.swap(new_index, current_index);
-
-            if current_index == self.active_tab_index {
-                self.set_active_tab_index(new_index, ctx);
-            } else if new_index == self.active_tab_index {
-                self.set_active_tab_index(current_index, ctx);
-            }
-
-            ctx.notify();
+            self.move_tab_to_flat_index(current_index, new_index, ctx);
         }
     }
 

@@ -1,0 +1,2 @@
+ALTER TABLE windows ADD COLUMN tab_groups TEXT;
+ALTER TABLE tabs ADD COLUMN group_id INTEGER;

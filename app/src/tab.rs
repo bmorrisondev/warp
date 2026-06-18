@@ -75,6 +75,65 @@ const COMPACT_TAB_WIDTH_THRESHOLD: f32 = 42.0;
 // Horizontal inset for the tab close button
 const TAB_CLOSE_BUTTON_HORIZONTAL_INSET: f32 = 2.0;
 
+/// Unique identifier for a tab group within a workspace.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TabGroupId(pub usize);
+
+/// Metadata for a tab group.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TabGroupInfo {
+    pub id: TabGroupId,
+    /// User-visible name. `None` means the group shows a default placeholder.
+    pub name: Option<String>,
+    /// Whether the group is collapsed in the vertical tabs panel.
+    pub collapsed: bool,
+}
+
+impl TabGroupInfo {
+    pub fn new(id: TabGroupId) -> Self {
+        Self {
+            id,
+            name: None,
+            collapsed: false,
+        }
+    }
+
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// Display name for the group header.
+    pub fn display_name(&self, index: usize) -> String {
+        self.name
+            .clone()
+            .unwrap_or_else(|| format!("Group {}", index + 1))
+    }
+}
+
+/// Context menu items for a configurable tab group header in the vertical tabs panel.
+pub fn tab_group_context_menu_items(
+    group_id: TabGroupId,
+    collapsed: bool,
+) -> Vec<MenuItem<WorkspaceAction>> {
+    vec![
+        MenuItemFields::new("Rename group")
+            .with_on_select_action(WorkspaceAction::RenameTabGroup { group_id })
+            .into_item(),
+        MenuItemFields::new(if collapsed {
+            "Expand group"
+        } else {
+            "Collapse group"
+        })
+        .with_on_select_action(WorkspaceAction::ToggleTabGroupCollapsed { group_id })
+        .into_item(),
+        MenuItem::Separator,
+        MenuItemFields::new("New tab in group")
+            .with_on_select_action(WorkspaceAction::AddTabInGroup { group_id })
+            .into_item(),
+    ]
+}
+
 /// Represents the user's manual tab-color selection state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SelectedTabColor {
@@ -145,13 +204,15 @@ pub struct TabData {
     pub indicator_hover_state: MouseStateHandle,
     // Used by a later drag-tab branch to distinguish tabs that have moved into detached windows.
     pub detached: bool,
+    /// Which tab group this tab belongs to.
+    pub group_id: TabGroupId,
 }
 
 const TAB_COLOR_ICON_PATH: &str = "bundled/svg/ellipse.svg";
 const TAB_NO_COLOR_ICON_PATH: &str = "bundled/svg/no_color_ellipse.svg";
 
 impl TabData {
-    pub fn new(pane_group: ViewHandle<PaneGroup>) -> Self {
+    pub fn new(pane_group: ViewHandle<PaneGroup>, group_id: TabGroupId) -> Self {
         Self {
             pane_group,
             tab_mouse_state: Default::default(),
@@ -162,6 +223,7 @@ impl TabData {
             selected_color: SelectedTabColor::Unset,
             indicator_hover_state: Default::default(),
             detached: false,
+            group_id,
         }
     }
 

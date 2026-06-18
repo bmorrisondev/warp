@@ -43,6 +43,7 @@ pub struct Window {
     pub agent_management_filters: Option<String>,
     pub left_panel_open: Option<bool>,
     pub vertical_tabs_panel_open: Option<bool>,
+    pub tab_groups: Option<String>,
 }
 
 #[derive(Identifiable, Insertable, Queryable)]
@@ -340,6 +341,7 @@ pub struct NewWindow {
     pub agent_management_filters: Option<String>,
     pub left_panel_open: Option<bool>,
     pub vertical_tabs_panel_open: Option<bool>,
+    pub tab_groups: Option<String>,
 }
 
 #[derive(Identifiable, Queryable, Associations)]
@@ -349,6 +351,7 @@ pub struct Tab {
     pub window_id: i32,
     pub custom_title: Option<String>,
     pub color: Option<String>,
+    pub group_id: Option<i32>,
 }
 
 #[derive(Insertable)]
@@ -357,6 +360,7 @@ pub struct NewTab {
     pub window_id: i32,
     pub custom_title: Option<String>,
     pub color: Option<String>,
+    pub group_id: Option<i32>,
 }
 
 /// The panes data model includes pane_nodes, pane_leaves and pane_branches.

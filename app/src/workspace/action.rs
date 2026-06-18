@@ -34,7 +34,7 @@ use crate::server::telemetry::{
     AddTabWithShellSource, AgentModeEntrypoint, PaletteSource, SharingDialogSource,
 };
 use crate::settings_view::{SettingsAction as SettingsTabAction, SettingsSection};
-use crate::tab::{NewSessionMenuItem, SelectedTabColor};
+use crate::tab::{NewSessionMenuItem, SelectedTabColor, TabGroupId};
 use crate::tab_configs::TabConfig;
 use crate::terminal::available_shells::AvailableShell;
 use crate::terminal::view::inline_banner::ZeroStatePromptSuggestionType;
@@ -134,6 +134,36 @@ pub enum WorkspaceAction {
     ToggleVerticalTabsPaneContextMenu {
         tab_index: usize,
         target: VerticalTabsPaneContextMenuTarget,
+        position: Vector2F,
+    },
+    /// Creates a new empty tab group in the vertical tabs sidebar.
+    CreateTabGroup {
+        name: Option<String>,
+    },
+    /// Adds a tab to the given group.
+    AddTabInGroup {
+        group_id: TabGroupId,
+    },
+    ToggleTabGroupCollapsed {
+        group_id: TabGroupId,
+    },
+    RenameTabGroup {
+        group_id: TabGroupId,
+    },
+    SetTabGroupName {
+        group_id: TabGroupId,
+        name: String,
+    },
+    DropTabOnGroupHeader {
+        tab_index: usize,
+        group_id: TabGroupId,
+    },
+    HoverTabGroupHeader {
+        group_id: TabGroupId,
+    },
+    ClearHoveredTabGroup,
+    ToggleTabGroupContextMenu {
+        group_id: TabGroupId,
         position: Vector2F,
     },
     TabHoverWidthStart {
@@ -798,6 +828,11 @@ impl WorkspaceAction {
             | OpenRepository { .. }
             | SelectTabConfig(_)
             | ToggleVerticalTabsPanel => true, // actions that actually change a state of the state of user's
+            CreateTabGroup { .. }
+            | AddTabInGroup { .. }
+            | ToggleTabGroupCollapsed { .. }
+            | SetTabGroupName { .. }
+            | DropTabOnGroupHeader { .. } => true,
             // workspace would most likely require a save, so that if the app gets
             // restarted, the user can continue working
             AutoupdateFailureLink
@@ -833,6 +868,10 @@ impl WorkspaceAction {
             | OpenLaunchConfigSaveModal
             | ToggleTabRightClickMenu { .. }
             | ToggleVerticalTabsPaneContextMenu { .. }
+            | ToggleTabGroupContextMenu { .. }
+            | RenameTabGroup { .. }
+            | HoverTabGroupHeader { .. }
+            | ClearHoveredTabGroup
             | OpenNewSessionMenu { .. }
             | ToggleTabConfigsMenu
             | ToggleNewSessionMenu { .. }

@@ -70,9 +70,10 @@ use crate::app_state::{
     AIFactPaneSnapshot, AmbientAgentPaneSnapshot, AppState, BranchSnapshot, CodePaneSnapShot,
     CodePaneTabSnapshot, CodeReviewPaneSnapshot, EnvVarCollectionPaneSnapshot, LeafContents,
     LeafSnapshot, LeftPanelSnapshot, NotebookPaneSnapshot, PaneFlex, PaneNodeSnapshot,
-    RightPanelSnapshot, SettingsPaneSnapshot, SplitDirection, TabSnapshot, TerminalPaneSnapshot,
-    WindowSnapshot, WorkflowPaneSnapshot,
+    PersistedTabGroupState, RightPanelSnapshot, SettingsPaneSnapshot, SplitDirection, TabSnapshot,
+    TerminalPaneSnapshot, WindowSnapshot, WorkflowPaneSnapshot,
 };
+use crate::tab::TabGroupId;
 use crate::auth::auth_manager::PersistedCurrentUserInformation;
 use crate::auth::auth_state::AuthStateProvider;
 use crate::auth::UserUid;
@@ -923,6 +924,7 @@ fn save_app_state(conn: &mut SqliteConnection, app_state: &AppState) -> Result<(
                     .agent_management_filters
                     .as_ref()
                     .and_then(|f| serde_json::to_string(f).ok()),
+                tab_groups: serde_json::to_string(&window.tab_groups).ok(),
             };
             diesel::insert_into(schema::windows::dsl::windows)
                 .values(new_window)
@@ -956,6 +958,7 @@ fn save_app_state(conn: &mut SqliteConnection, app_state: &AppState) -> Result<(
                         SelectedTabColor::Unset => None,
                         _ => serde_yaml::to_string(&tab.selected_color).ok(),
                     },
+                    group_id: Some(tab.group_id.0 as i32),
                 })
                 .collect();
 
@@ -2769,6 +2772,10 @@ fn read_sqlite_data(
                             .unwrap_or_default(),
                         left_panel,
                         right_panel,
+                        group_id: tab
+                            .group_id
+                            .map(|group_id_value| TabGroupId(group_id_value as usize))
+                            .unwrap_or_default(),
                     })
                 })
                 .collect();
@@ -2859,6 +2866,11 @@ fn read_sqlite_data(
                 agent_management_filters: window
                     .agent_management_filters
                     .and_then(|s| serde_json::from_str(&s).ok()),
+                tab_groups: window
+                    .tab_groups
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str::<PersistedTabGroupState>(s).ok())
+                    .unwrap_or_default(),
             }
         })
         .collect();
