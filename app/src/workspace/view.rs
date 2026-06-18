@@ -1382,6 +1382,7 @@ impl Workspace {
             self.current_workspace_state.clear_tab_being_renamed();
             let title = self.tab_rename_editor.as_ref(ctx).buffer_text(ctx);
             let tab = &self.tabs[tab_index];
+            let mut title_changed = false;
             tab.pane_group.update(ctx, |view, ctx| {
                 // Only update the title if it was actually changed. Otherwise, lets assume
                 // user's intend was to cancel the operation.
@@ -1391,10 +1392,14 @@ impl Workspace {
                         ctx
                     );
                     view.set_title(&title, ctx);
+                    title_changed = true;
                 }
             });
             self.clear_tab_name_editor(ctx);
             self.update_window_title(ctx);
+            if title_changed {
+                ctx.dispatch_global_action("workspace:save_app", ());
+            }
             ctx.notify();
         }
     }
@@ -5167,6 +5172,7 @@ impl Workspace {
             };
         }
         self.clear_tab_name_editor(ctx);
+        ctx.dispatch_global_action("workspace:save_app", ());
         ctx.notify();
     }
 

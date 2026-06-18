@@ -2072,6 +2072,10 @@ pub(crate) fn app_callbacks(is_integration_test: bool) -> warpui::platform::AppC
                 manager.close_notebooks(ctx);
             });
 
+            // On macOS, Cmd+Q hides windows and exits without firing per-window close
+            // callbacks, so this is the last chance to persist tabs and layout.
+            ctx.dispatch_global_action("workspace:save_app", &());
+
             PersistenceWriter::handle(ctx).update(ctx, |writer, _ctx| {
                 writer.terminate();
             });

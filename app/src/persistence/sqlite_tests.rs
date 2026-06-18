@@ -16,7 +16,7 @@ use super::{
 };
 use crate::app_state::{
     AppState, CodePaneSnapShot, CodePaneTabSnapshot, LeafContents, LeafSnapshot, PaneNodeSnapshot,
-    TabSnapshot, TerminalPaneSnapshot, WindowSnapshot,
+    PersistedTabGroupState, TabSnapshot, TerminalPaneSnapshot, WindowSnapshot,
 };
 use crate::cloud_object::{CloudObjectPermissions, Owner};
 use crate::code::editor_management::CodeSource;
@@ -24,7 +24,7 @@ use crate::notebooks::{CloudNotebook, CloudNotebookModel};
 use crate::persistence::model::ObjectPermissions;
 use crate::persistence::{BlockCompleted, ModelEvent, PersistenceScope};
 use crate::server::ids::ClientId;
-use crate::tab::SelectedTabColor;
+use crate::tab::{SelectedTabColor, TabGroupId, TabGroupInfo};
 use crate::terminal::model::block::SerializedBlock;
 use crate::terminal::ShellLaunchData;
 
@@ -328,6 +328,85 @@ fn test_sqlite_round_trips_vertical_tabs_panel_open() {
             .map(|window| window.vertical_tabs_panel_open)
             .collect::<Vec<_>>(),
         vec![false, true]
+    );
+}
+
+#[test]
+fn test_sqlite_round_trips_tab_groups() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let mut conn = setup_database(&database_path).expect("database should initialize");
+
+    let mut window = test_terminal_window_snapshot(false);
+    window.tab_groups = PersistedTabGroupState {
+        groups: vec![
+            TabGroupInfo::new(TabGroupId(0)).with_name("Work"),
+            TabGroupInfo {
+                id: TabGroupId(1),
+                name: Some("Personal".to_string()),
+                collapsed: true,
+            },
+        ],
+        next_group_id: 2,
+    };
+    window.tabs[0].group_id = TabGroupId(1);
+
+    let app_state = AppState {
+        windows: vec![window],
+        active_window_index: Some(0),
+        block_lists: Default::default(),
+        running_mcp_servers: Default::default(),
+    };
+
+    save_app_state(&mut conn, &app_state).expect("app state should save");
+
+    let restored = read_sqlite_data(&mut conn, None)
+        .expect("app state should load")
+        .app_state;
+
+    assert_eq!(restored.windows.len(), 1);
+    assert_eq!(
+        restored.windows[0].tab_groups,
+        PersistedTabGroupState {
+            groups: vec![
+                TabGroupInfo::new(TabGroupId(0)).with_name("Work"),
+                TabGroupInfo {
+                    id: TabGroupId(1),
+                    name: Some("Personal".to_string()),
+                    collapsed: true,
+                },
+            ],
+            next_group_id: 2,
+        }
+    );
+    assert_eq!(restored.windows[0].tabs[0].group_id, TabGroupId(1));
+}
+
+#[test]
+fn test_sqlite_round_trips_custom_tab_title() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let mut conn = setup_database(&database_path).expect("database should initialize");
+
+    let mut window = test_terminal_window_snapshot(false);
+    window.tabs[0].custom_title = Some("My API work".to_string());
+
+    let app_state = AppState {
+        windows: vec![window],
+        active_window_index: Some(0),
+        block_lists: Default::default(),
+        running_mcp_servers: Default::default(),
+    };
+
+    save_app_state(&mut conn, &app_state).expect("app state should save");
+
+    let restored = read_sqlite_data(&mut conn, None)
+        .expect("app state should load")
+        .app_state;
+
+    assert_eq!(
+        restored.windows[0].tabs[0].custom_title.as_deref(),
+        Some("My API work")
     );
 }
 
