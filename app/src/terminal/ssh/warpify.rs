@@ -160,19 +160,37 @@ pub fn warpify_ssh_session_command(
     shell_type: ShellType,
     app: &AppContext,
 ) -> Option<String> {
-    let asset = match (uname, shell_type) {
+    reattach_warpify_ssh_session_command(uname, shell_type, app, false)
+}
+
+/// Convert the reattach_warpify_ssh_session script into a string.
+pub fn reattach_warpify_ssh_session_command(
+    uname: &str,
+    shell_type: ShellType,
+    app: &AppContext,
+    reattach: bool,
+) -> Option<String> {
+    let asset = match (uname, shell_type, reattach) {
         // Mac scripts must be less than 1020 characters due to macOS 15+ pty issue
-        ("Darwin", ShellType::Zsh | ShellType::Bash) => {
+        ("Darwin", ShellType::Zsh | ShellType::Bash, false) => {
             bundled_asset!("ssh/bash_zsh/warpify_ssh_session_mac.sh")
         }
+        ("Darwin", ShellType::Zsh | ShellType::Bash, true) => {
+            bundled_asset!("ssh/bash_zsh/reattach_warpify_ssh_session_mac.sh")
+        }
         // Mac scripts must be less than 1020 characters due to macOS 15+ pty issue
-        ("Darwin", ShellType::Fish) => bundled_asset!("ssh/fish/warpify_ssh_session_mac.sh"),
-        (_, ShellType::Zsh | ShellType::Bash) => {
+        ("Darwin", ShellType::Fish, false) => bundled_asset!("ssh/fish/warpify_ssh_session_mac.sh"),
+        ("Darwin", ShellType::Fish, true) => bundled_asset!("ssh/fish/warpify_ssh_session_mac.sh"),
+        (_, ShellType::Zsh | ShellType::Bash, false) => {
             bundled_asset!("ssh/bash_zsh/warpify_ssh_session.sh")
         }
-        (_, ShellType::Fish) => bundled_asset!("ssh/fish/warpify_ssh_session.sh"),
+        (_, ShellType::Zsh | ShellType::Bash, true) => {
+            bundled_asset!("ssh/bash_zsh/reattach_warpify_ssh_session.sh")
+        }
+        (_, ShellType::Fish, false) => bundled_asset!("ssh/fish/warpify_ssh_session.sh"),
+        (_, ShellType::Fish, true) => bundled_asset!("ssh/fish/warpify_ssh_session.sh"),
         // PowerShell is not supported yet.
-        (_, ShellType::PowerShell) => return None,
+        (_, ShellType::PowerShell, _) => return None,
     };
 
     // Todo(Jack): look into avoiding an allocation here.

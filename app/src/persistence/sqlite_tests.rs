@@ -26,6 +26,7 @@ use crate::persistence::{BlockCompleted, ModelEvent, PersistenceScope};
 use crate::server::ids::ClientId;
 use crate::tab::{SelectedTabColor, TabGroupId, TabGroupInfo};
 use crate::terminal::model::block::SerializedBlock;
+use crate::terminal::remote_tmux::RemoteTmuxConnection;
 use crate::terminal::ShellLaunchData;
 
 #[test]
@@ -273,6 +274,7 @@ fn test_terminal_window_snapshot(vertical_tabs_panel_open: bool) -> WindowSnapsh
                     active_profile_id: None,
                     conversation_ids_to_restore: vec![],
                     active_conversation_id: None,
+                    remote_tmux_connection: None,
                 }),
             }),
             default_directory_color: None,
@@ -411,6 +413,85 @@ fn test_sqlite_round_trips_custom_tab_title() {
 }
 
 #[test]
+fn sqlite_round_trips_remote_tmux_connection_on_terminal_pane() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let mut conn = setup_database(&database_path).expect("database should initialize");
+
+    let remote_tmux_connection = RemoteTmuxConnection {
+        ssh_command: "ssh user@remote.example".to_string(),
+        tmux_socket: "warp".to_string(),
+        tmux_session_name: Some("dev".to_string()),
+    };
+
+    let app_state = AppState {
+        windows: vec![WindowSnapshot {
+            tabs: vec![TabSnapshot {
+                custom_title: None,
+                root: PaneNodeSnapshot::Leaf(LeafSnapshot {
+                    is_focused: true,
+                    custom_vertical_tabs_title: None,
+                    contents: LeafContents::Terminal(TerminalPaneSnapshot {
+                        uuid: vec![7],
+                        cwd: None,
+                        shell_launch_data: None,
+                        is_active: true,
+                        is_read_only: false,
+                        input_config: None,
+                        llm_model_override: None,
+                        active_profile_id: None,
+                        conversation_ids_to_restore: vec![],
+                        active_conversation_id: None,
+                        remote_tmux_connection: Some(remote_tmux_connection.clone()),
+                    }),
+                }),
+                default_directory_color: None,
+                selected_color: SelectedTabColor::default(),
+                left_panel: None,
+                right_panel: None,
+                group_id: Default::default(),
+            }],
+            active_tab_index: 0,
+            bounds: None,
+            fullscreen_state: Default::default(),
+            quake_mode: false,
+            universal_search_width: None,
+            warp_ai_width: None,
+            voltron_width: None,
+            warp_drive_index_width: None,
+            left_panel_open: false,
+            vertical_tabs_panel_open: false,
+            left_panel_width: None,
+            right_panel_width: None,
+            agent_management_filters: None,
+            tab_groups: Default::default(),
+        }],
+        active_window_index: Some(0),
+        block_lists: Default::default(),
+        running_mcp_servers: Default::default(),
+    };
+
+    save_app_state(&mut conn, &app_state).expect("app state should save");
+
+    let restored = read_sqlite_data(&mut conn, None)
+        .expect("app state should load")
+        .app_state;
+
+    let PaneNodeSnapshot::Leaf(LeafSnapshot {
+        contents: LeafContents::Terminal(terminal_snapshot),
+        ..
+    }) = &restored.windows[0].tabs[0].root
+    else {
+        panic!("expected terminal pane");
+    };
+
+    assert_eq!(
+        terminal_snapshot.remote_tmux_connection.as_ref(),
+        Some(&remote_tmux_connection)
+    );
+}
+
+#[test]
 fn test_sqlite_round_trips_custom_vertical_tabs_title() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let database_path = tempdir.path().join("warp.sqlite");
@@ -437,6 +518,7 @@ fn test_sqlite_round_trips_custom_vertical_tabs_title() {
                         active_profile_id: None,
                         conversation_ids_to_restore: vec![],
                         active_conversation_id: None,
+                        remote_tmux_connection: None,
                     }),
                 }),
                 default_directory_color: None,

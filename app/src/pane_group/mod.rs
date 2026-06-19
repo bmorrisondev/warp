@@ -1651,6 +1651,14 @@ impl PaneGroup {
 
                 let terminal_view_id = terminal_view.id();
 
+                if let Some(remote_tmux_connection) =
+                    terminal_snapshot.remote_tmux_connection.clone()
+                {
+                    terminal_view.update(ctx, |view, ctx| {
+                        view.begin_remote_tmux_restore(remote_tmux_connection, ctx);
+                    });
+                }
+
                 let pane_data = TerminalPane::new(
                     uuid.0,
                     terminal_manager,
@@ -2137,6 +2145,7 @@ impl PaneGroup {
                             active_profile_id: None,
                             conversation_ids_to_restore: Vec::new(),
                             active_conversation_id: None,
+                            remote_tmux_connection: None,
                         })
                     }
                 };

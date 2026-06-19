@@ -3223,11 +3223,12 @@ impl ansi::Handler for TerminalModel {
                 let num_cols = size.columns();
 
                 if self.tmux_control_mode_context != Some(TmuxControlModeContext::UserInitiated) {
-                    // We don't want to intentionally disable persistence when the user runs tmux control
-                    // mode on their own.
-                    self.emit_handler_event(HandlerEvent::RunTmuxCommand(
-                        TmuxCommand::SetDestroyUnattached,
-                    ));
+                    // Keep warp-managed remote tmux sessions alive across Warp restarts.
+                    if !FeatureFlag::RemoteTmuxSessionRestore.is_enabled() {
+                        self.emit_handler_event(HandlerEvent::RunTmuxCommand(
+                            TmuxCommand::SetDestroyUnattached,
+                        ));
+                    }
 
                     self.emit_handler_event(HandlerEvent::RunTmuxCommand(
                         TmuxCommand::SetWindowSizeToSmallest,

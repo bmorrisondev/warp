@@ -77,6 +77,8 @@ fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::AIRules,
         #[cfg(feature = "ssh_tmux_wrapper")]
         FeatureFlag::SSHTmuxWrapper,
+        #[cfg(feature = "remote_tmux_session_restore")]
+        FeatureFlag::RemoteTmuxSessionRestore,
         #[cfg(feature = "shell_selector")]
         FeatureFlag::ShellSelector,
         #[cfg(feature = "integration_command")]

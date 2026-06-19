@@ -199,7 +199,8 @@ use super::ssh::util::{
     SshWarpifyCommand,
 };
 use super::ssh::warpify::{
-    begin_warpify_ssh_session_command, warpify_ssh_session_command, SshWarpifyBlock,
+    begin_warpify_ssh_session_command, reattach_warpify_ssh_session_command,
+    warpify_ssh_session_command, SshWarpifyBlock,
     SshWarpifyBlockEvent,
 };
 use super::ssh::SSH_WARPIFY_TIMEOUT_DURATION;
@@ -451,6 +452,7 @@ use crate::terminal::model::terminal_model::{
 use crate::terminal::model::{ObfuscateSecrets, RespectObfuscatedSecrets, SecretHandle};
 use crate::terminal::model_events::{AnsiHandlerEvent, ModelEvent, ModelEventDispatcher};
 use crate::terminal::recorder::PtyRecorder;
+use crate::terminal::remote_tmux::{remote_tmux_connection_for_session, RemoteTmuxConnection};
 use crate::terminal::safe_mode_settings::get_secret_obfuscation_mode;
 use crate::terminal::session_settings::{
     NotificationsMode, NotificationsSettings, SessionSettings, SessionSettingsChangedEvent,
@@ -2527,6 +2529,8 @@ pub struct TerminalView {
     /// Commands that should run as separate blocks after the active pending
     /// command finishes successfully.
     pending_command_queue: VecDeque<String>,
+    /// When true, the next SSH warpify should attach to an existing remote tmux session.
+    restoring_remote_tmux: bool,
     /// When true, enter agent view after pending setup commands complete
     /// (i.e. after `PendingCommandCompleted` is emitted). Set by
     /// `pane_tree_from_template_recursive` when a tab config has both
@@ -4196,6 +4200,7 @@ impl TerminalView {
             is_login_shell_bootstrapped: false,
             awaiting_pending_command_completion: false,
             pending_command_queue: Default::default(),
+            restoring_remote_tmux: false,
             enter_agent_view_after_pending_commands: false,
             slow_bootstrap_banner,
             is_slow_bootstrap_banner_open: false,
@@ -22298,6 +22303,28 @@ impl TerminalView {
         session.launch_data().cloned()
     }
 
+    pub fn remote_tmux_connection_if_active(
+        &self,
+        ctx: &AppContext,
+    ) -> Option<RemoteTmuxConnection> {
+        let shell_launch_data = self.shell_launch_data_if_local(ctx);
+        let session_id = self.active_block_session_id()?;
+        let session = self.sessions.as_ref(ctx).get(session_id)?;
+        remote_tmux_connection_for_session(session, shell_launch_data.as_ref())
+    }
+
+    pub fn begin_remote_tmux_restore(
+        &mut self,
+        connection: RemoteTmuxConnection,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if !FeatureFlag::RemoteTmuxSessionRestore.is_enabled() {
+            return;
+        }
+        self.restoring_remote_tmux = true;
+        self.set_pending_command_queue(vec![connection.restore_ssh_command()], ctx);
+    }
+
     fn spawning_command_for_subshell_sessions(
         &self,
         app: &AppContext,
@@ -24795,7 +24822,12 @@ impl TerminalView {
     ) {
         self.warpify_state.set_shell_type(&shell_type);
         self.model.lock().set_pending_warp_initiated_control_mode();
-        if let Some(script) = warpify_ssh_session_command(uname, shell_type, ctx) {
+        let reattach = self.restoring_remote_tmux;
+        if let Some(script) = reattach_warpify_ssh_session_command(uname, shell_type, ctx, reattach)
+        {
+            if reattach {
+                self.restoring_remote_tmux = false;
+            }
             self.clear_line_editor_and_write_to_pty_with_mac_workaround_hack(
                 convert_script_to_one_line(&script).into_bytes(),
                 ctx,

@@ -18,6 +18,7 @@ use crate::server::ids::SyncId;
 use crate::settings_view::environments_page::EnvironmentsPage;
 use crate::settings_view::SettingsSection;
 use crate::tab::{SelectedTabColor, TabGroupId, TabGroupInfo};
+use crate::terminal::remote_tmux::RemoteTmuxConnection;
 use crate::terminal::ShellLaunchData;
 use crate::themes::theme::AnsiColorIdentifier;
 use crate::workspace::view::left_panel::ToolPanelView;
@@ -210,6 +211,8 @@ pub struct TerminalPaneSnapshot {
     /// The active conversation ID if the agent view was open in fullscreen mode.
     /// When `Some`, the agent view should be restored to fullscreen for this conversation.
     pub active_conversation_id: Option<AIConversationId>,
+    /// When set, this pane should reconnect to a remote tmux session on restore.
+    pub remote_tmux_connection: Option<RemoteTmuxConnection>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

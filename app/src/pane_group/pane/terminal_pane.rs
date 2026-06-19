@@ -548,6 +548,7 @@ impl PaneContent for TerminalPane {
                 active_profile_id: None,
                 conversation_ids_to_restore: vec![],
                 active_conversation_id: None,
+                remote_tmux_connection: None,
             })
         } else if let Some(task_id) = view
             .ambient_agent_view_model()
@@ -578,6 +579,7 @@ impl PaneContent for TerminalPane {
                     active_profile_id: None,
                     conversation_ids_to_restore: vec![],
                     active_conversation_id: None,
+                    remote_tmux_connection: None,
                 })
             }
         } else {
@@ -608,17 +610,21 @@ impl PaneContent for TerminalPane {
                         .active_conversation_id()
                 });
 
+            let shell_launch_data = view.shell_launch_data_if_local(app);
+            let remote_tmux_connection = view.remote_tmux_connection_if_active(app);
+
             LeafContents::Terminal(TerminalPaneSnapshot {
                 uuid: self.uuid.clone(),
                 cwd: view.pwd_if_local(app),
                 is_active,
                 is_read_only: view.model.lock().is_read_only(),
-                shell_launch_data: view.shell_launch_data_if_local(app),
+                shell_launch_data,
                 input_config: Some(current_input_config),
                 llm_model_override,
                 active_profile_id,
                 conversation_ids_to_restore,
                 active_conversation_id,
+                remote_tmux_connection,
             })
         }
     }

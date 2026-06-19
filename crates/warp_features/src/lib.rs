@@ -137,6 +137,9 @@ pub enum FeatureFlag {
     /// Routes SSH sessions through the tmux-backed SSH wrapper.
     SSHTmuxWrapper,
 
+    /// Persists warpified SSH tmux sessions across window restore and reconnects on startup.
+    RemoteTmuxSessionRestore,
+
     /// Enables the shell selector, allowing us to open a new tab in
     /// a shell other than the default shell.
     ShellSelector,
